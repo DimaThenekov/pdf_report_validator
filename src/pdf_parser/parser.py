@@ -1,17 +1,13 @@
 import fitz  # PyMuPDF
-from src.models.raw_document import RawPDFDocument, TextBlock
 
 class PDFParser:
     """Извлекает текст, шрифты и координаты из PDF."""
     
-    def parse(self, pdf_path: str) -> RawPDFDocument:
-        """
-        Возвращает RawPDFDocument, заполненный данными.
-        Заглушка: пока просто открывает файл.
-        """
+    def parse(self, pdf_path: str):
         doc = fitz.open(pdf_path)
-        raw_doc = RawPDFDocument(pages=list(range(len(doc))))
-        # TODO: реализовать извлечение блоков с шрифтами и координатами
-        # Использовать doc.get_page_text(page, flags=fitz.TEXT_PRESERVE_IMAGES?) 
-        # и page.get_text("dict") для получения детальной информации.
-        return raw_doc
+        all_pages_dict = []
+        for page_num in range(doc.page_count):
+            page = doc.load_page(page_num)
+            page_dict = page.get_text("dict");
+            all_pages_dict.append(page_dict)
+        return all_pages_dict
