@@ -1,24 +1,38 @@
+from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Tuple
-from src.models.raw_document import RawPDFDocument, TextBlock
-from src.models.section import Section  # прямой импорт допустим
+from typing import Optional
+
+class StructuredDocument:
+    blocks: list[BlockInfo]
+
+class BlockType(Enum):
+    TITLE = 1
+    CHAPTER = 2
+    SECTION = 3
+    APPENDIX = 4
+    TABLE = 5
+    PICTURE = 6
+    PARAGRAPH = 7
 
 @dataclass
-class StructuredDocument:
-    raw_document: RawPDFDocument
-    sections: List[Section] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+class BlockInfo:
+    id: int
+    type: BlockType
+    metainfo: BlockMetainfo
+    subblocks: list[BlockInfo]
 
-    def __post_init__(self):
-        # Устанавливаем обратную ссылку для каждого раздела
-        for section in self.sections:
-            section.document = self
+class BlockMetainfo:
+    pass
 
-    def get_page_blocks(self, page_num: int) -> List['TextBlock']:
-        return [b for b in self.raw_document.blocks if b.page_num == page_num]
-
-    def get_page_dimensions(self, page_num: int) -> Optional[Tuple[float, float]]:
-        dims = self.raw_document.metadata.get('page_dimensions')
-        if dims and 0 <= page_num - 1 < len(dims):
-            return dims[page_num - 1]
-        return None
+@dataclass
+class TitleMetainfo(BlockMetainfo):
+    university: Optional[str] = None
+    faculty: Optional[str] = None
+    practice_type: Optional[str] = None
+    student_full_name: Optional[str] = None
+    supervisor_full_name: Optional[str] = None
+    student_group: Optional[str] = None
+    supervisor_position: Optional[str] = None
+    major: Optional[str] = None
+    specialization: Optional[str] = None
+    year: Optional[int] = None
