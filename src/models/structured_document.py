@@ -2,19 +2,27 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional
 
+# output of type_parser, input for parsers_matcher
 class StructuredDocument:
-    blocks: list[BlockInfo]
+    blocks: list[BlockInfo] = []
 
 class BlockType(Enum):
     TITLE = 1
-    CHAPTER = 2
-    SECTION = 3
-    APPENDIX = 4
-    TABLE = 5
-    PICTURE = 6
-    PARAGRAPH = 7
+    TOC = 2
+    CHAPTER = 3
+    SECTION = 4
+    APPENDIX = 5
+    TABLE = 6
+    PICTURE = 7
+    PARAGRAPH = 8
 
-# output of type_parser, input for parsers_matcher
+@dataclass
+class HeadingStyle:
+    font_name: Optional[str]
+    font_size: Optional[float]
+    color: Optional[int]
+    indent_x: float
+
 @dataclass
 class BlockInfo:
     id: int
@@ -37,6 +45,23 @@ class TitleMetainfo(BlockMetainfo):
     major: Optional[str] = None
     specialization: Optional[str] = None
     year: Optional[int] = None
+
+@dataclass
+class TocEntry:
+    title: str
+    target_page: str
+    raw_line: str
+
+@dataclass
+class TocMetainfo(BlockMetainfo):
+    entries: dict[str, TocEntry]
+
+@dataclass
+class SectionMetainfo(BlockMetainfo):
+    title: str = None
+    level: int = None
+    font_stats: dict = None
+    style: HeadingStyle = None
 
 # ==========================================================
 
