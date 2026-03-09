@@ -3,8 +3,10 @@ from src.models.structured_document import StructuredDocument
 from ..models.structured_document import (
     BlockInfo,
     BlockType,
-    HeadingStyle,
+    ParagraphMetainfo,
     SectionMetainfo,
+    TableMetainfo,
+    TableRowEntry,
     TitleMetainfo,
     TocMetainfo,
     TocEntry,
@@ -20,7 +22,7 @@ class TypeParser:
         self.current_page = 1
         self.current_block = 0
         self.current_line = 0
-        self.current_span = 0
+        self.current_table = 0
         self.toc = None
         self.heading_styles = []
         self.main_style = None
@@ -29,12 +31,20 @@ class TypeParser:
         temp = self.id_counter
         self.id_counter += 1
         return temp
+    
+    def inc(self, pages):
+        if self.current_block + 1 == len(pages[self.current_page].get("blocks", [])):
+            self.current_page += 1
+            self.current_block = 0
+        else:
+            self.current_block += 1
 
 
     def parse_document(self, document):
+        self.pages = document
         pages = [page.get_text("dict", sort=True) for page in document]
 
-        self.main_style = compute_body_style(pages)
+        self.main_style = compute_body_main_style(pages)
         result = StructuredDocument()
 
         title_page = pages[0]
@@ -56,7 +66,7 @@ class TypeParser:
                     result.blocks.append(self.toc)
                 else:
                     if is_heading_candidate(block, self.toc, self.main_style):
-                        style = get_heading_style(block)
+                        style = get_block_main_style(block)
                         level = check_heading_style(style, self.heading_styles)
                         if (level == -1):
                             level = len(self.heading_styles)
@@ -84,7 +94,7 @@ class TypeParser:
 
     def parse_toc_multi_page_blocks(
         self,
-        pages_dicts: list[dict],
+        pages: list[dict],
     ) -> BlockInfo:
         
         entries: dict[str, TocEntry] = {}
@@ -101,8 +111,8 @@ class TypeParser:
                 subblocks=[],
             )
 
-        while page_idx < len(pages_dicts):
-            page = pages_dicts[page_idx]
+        while page_idx < len(pages):
+            page = pages[page_idx]
             blocks = page.get("blocks", [])
 
             while block_idx < len(blocks):
@@ -115,11 +125,7 @@ class TypeParser:
 
                 parsed = parse_toc_entry_block(block)
                 if parsed is not None:
-                    entries[parsed["title"].lower()] = TocEntry(
-                        title=parsed["title"],
-                        target_page=parsed["page"],
-                        raw_line=parsed["raw"],
-                    )
+                    entries[parsed.title.lower()] = parsed
                     block_idx += 1
                     continue
 
@@ -209,46 +215,124 @@ class TypeParser:
     
     def parse_section(self, pages: list[dict], level: int) -> BlockInfo:
         block = pages[self.current_page].get("blocks", [])[self.current_block]
-        text = get_block_text(block)
+        text = get_block_single_line_text(block)
         meta = SectionMetainfo(
             title = text.strip().lower(),
             level=level,
             font_stats=get_block_font_stats(block),
-            style=get_heading_style(block)
+            style=get_block_main_style(block)
         )
         subblocks = []
-
-        self.current_block += 1
+        self.inc(pages)
 
         while (self.current_page < len(pages)):
-            page_idx = self.current_page
-            page = pages[page_idx]
+            page = pages[self.current_page]
             blocks = page.get("blocks", [])
-            while (self.current_block < len(blocks)):
-                block_idx = self.current_block
-                block = blocks[block_idx]
-                if (is_heading_candidate(block, self.toc, self.main_style)):
-                    style = get_heading_style(block)
-                    level = check_heading_style(style, self.heading_styles)
-                    if (level == -1):
-                        level = len(self.heading_styles)
-                        self.heading_styles.append(style)
-                    section_block = self.parse_section(
-                        pages,
-                        level
+            block = blocks[self.current_block]
+            if (is_heading_candidate(block, self.toc, self.main_style)):
+                style = get_block_main_style(block)
+                new_level = check_heading_style(style, self.heading_styles)
+                if (new_level == -1):
+                    new_level = len(self.heading_styles)
+                    self.heading_styles.append(style)
+                if new_level <= level:
+                    return BlockInfo(
+                        self.next_id(),
+                        type=BlockType.SECTION,
+                        metainfo=meta,
+                        subblocks=subblocks
                     )
-                    subblocks.append(section_block)
-                if (page_idx < self.current_page):
-                    break
+                section_block = self.parse_section(
+                    pages,
+                    level
+                )
+                subblocks.append(section_block)
+            else:
+                if is_table_start(block):
+                    table_meta = parse_table_start(self.pages[self.current_page].find_tables()[self.current_table])
+                    self.current_table += 1
+                    self.parse_table(pages, table_meta)
+                    table_block = BlockInfo(
+                        self.next_id(),
+                        BlockType.TABLE,
+                        metainfo=table_meta,
+                        subblocks=[]
+                    )
+                    subblocks.append(table_block)
                 else:
-                    continue
-                
+                    if is_paragraph_start(block, self.main_style):
+                        paragraph_block = self.parse_paragraph(
+                            pages
+                        )
+                        subblocks.append(paragraph_block)
 
-
-        block = BlockInfo(
+        return BlockInfo(
             self.next_id(),
             type=BlockType.SECTION,
             metainfo=meta,
             subblocs=subblocks
         )
-        return block
+    
+
+    def parse_table(self, pages: list[dict], meta: TableMetainfo, min_gap: float = 8):
+        block = pages[self.current_page].get("blocks", [])[self.current_block]
+        column_info = meta.column_info
+        prev_block = align_block_to_columns(build_block_content(block), column_info)
+        rows = []
+        self.inc(pages)
+
+        while (self.current_page < len(pages)):
+            blocks = pages[self.current_page].get("blocks", [])
+            block = align_block_to_columns(build_block_content(blocks[self.current_block]), column_info)
+            if (block.top_indent > prev_block.bottom_indent):
+                diff = block.top_indent - prev_block.bottom_indent
+                if (diff > min_gap):
+                    rows.append(prev_block)
+                    prev_block = block
+                else:
+                    prev_block += block
+            else:
+                prev_block = block
+            self.inc(pages)
+
+
+    def parse_paragraph(self, pages: list[dict]) -> BlockInfo:
+        block = pages[self.current_page].get("blocks", [])[self.current_block]
+        full_text = get_block_single_line_text(block)
+        description = get_block_font_stats(block)
+        style = get_block_main_style(block)
+        self.inc(pages)
+
+        while (self.current_page < len(pages)):
+            page = pages[self.current_page]
+            blocks = page.get("blocks", [])
+            block = blocks[self.current_block]
+            if (continues_paragraph(block, self.main_style)):
+                text = get_block_single_line_text(block)
+                full_text += text
+                description += get_block_font_stats(block)
+            else:
+                meta = ParagraphMetainfo(
+                    full_text=" ".join(full_text.split()).strip(),
+                    style=description.get_style(),
+                    start_indent=style.indent_left
+                )
+                return BlockInfo(
+                    id=self.next_id(),
+                    type=BlockType.PARAGRAPH,
+                    metainfo=meta,
+                    subblocks=[]
+                )
+            self.inc(pages)
+
+        meta = ParagraphMetainfo(
+            full_text=" ".join(full_text.split()).strip(),
+            style=description.get_style(),
+            start_indent=style.indent_left
+        )
+        return BlockInfo(
+            id=self.next_id(),
+            type=BlockType.PARAGRAPH,
+            metainfo=meta,
+            subblocks=[]
+        )
