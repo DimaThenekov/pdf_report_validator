@@ -29,6 +29,19 @@ TABLE_CAPTION_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+TABLE_CONTINUATION_RE = re.compile(
+    r"""
+    ^                           # Начало строки
+    Продолжение\s+таблицы\s+№   # Фиксированный текст с любыми пробелами
+    \s*                         # Возможный пробел после знака №
+    \d+                         # Номер таблицы (одна или более цифр)
+    .*                          # Любые символы до конца (тире, название и т.д.)
+    $                           # Конец строки
+    """,
+    re.IGNORECASE | re.VERBOSE
+)
+
+
 TOC_CAPTION_RE = re.compile(
     r"""(?<!\S)        # слева не буква/цифра (начало или пробел/знак)
     (Содержание|Оглавление)
@@ -60,63 +73,50 @@ def make_textblock_from_span(span: dict) -> TextBlock:
         color=span.get("color", 0),
     )
     return TextBlock(
-        text=span.get("text", ""),
+        text=span.get("text", "").strip(),
         bbox=Bbox(x0, y0, x1, y1),
         style=style,
     )
 
 
-def split_block_into_lineblock(block: dict, gap_tol: float = 10.0) -> LineBlock:
+from collections import defaultdict
+
+
+def split_block_into_lineblock(block: dict) -> LineBlock:
     lines = block.get("lines", [])
-    if not lines:
-        return LineBlock(text_blocks=[], bbox=Bbox(0, 0, 0, 0))
+    all_line_tbs = []
 
-    text_blocks: List[TextBlock] = []
     for line in lines:
-        for span in line.get("spans", []):
-            tb = make_textblock_from_span(span)
-            if tb.text:
-                text_blocks.append(tb)
+        spans = line.get("spans", [])
+        line_tbs = [make_textblock_from_span(s) for s in spans if make_textblock_from_span(s).text]
+        
+        if not line_tbs:
+            continue
+            
+        line_tbs.sort(key=lambda tb: tb.bbox.x0)
+        text = " ".join(tb.text.strip() for tb in line_tbs)
+        
+        style_weights = defaultdict(int)
+        for tb in line_tbs:
+            style_weights[tb.style] += len(tb.text)
+        main_style = max(style_weights.items(), key=lambda kv: kv[1])[0]
 
-    if not text_blocks:
+        lx0 = min(tb.bbox.x0 for tb in line_tbs)
+        ly0 = min(tb.bbox.y0 for tb in line_tbs)
+        lx1 = max(tb.bbox.x1 for tb in line_tbs)
+        ly1 = max(tb.bbox.y1 for tb in line_tbs)
+        
+        all_line_tbs.append(TextBlock(text, Bbox(lx0, ly0, lx1, ly1), main_style))
+
+    if not all_line_tbs:
         return LineBlock(text_blocks=[], bbox=Bbox(0, 0, 0, 0))
 
-    text_blocks.sort(key=lambda tb: tb.bbox.x0)
+    gx0 = min(tb.bbox.x0 for tb in all_line_tbs)
+    gy0 = min(tb.bbox.y0 for tb in all_line_tbs)
+    gx1 = max(tb.bbox.x1 for tb in all_line_tbs)
+    gy1 = max(tb.bbox.y1 for tb in all_line_tbs)
 
-    columns: List[List[TextBlock]] = []
-    current_col: List[TextBlock] = [text_blocks[0]]
-
-    for prev, cur in zip(text_blocks, text_blocks[1:]):
-        gap = cur.bbox.x0 - prev.bbox.x1
-        if gap > gap_tol:
-            columns.append(current_col)
-            current_col = [cur]
-        else:
-            current_col.append(cur)
-    columns.append(current_col)
-
-    merged_text_blocks: List[TextBlock] = []
-    for col in columns:
-        col_text = "".join(tb.text for tb in col)
-
-        style_weights = defaultdict(int)
-        for tb in col:
-            if tb.text and tb.style:
-                style_weights[tb.style] += len(tb.text)
-        main_style = max(style_weights.items(), key=lambda kv: kv[1])[0] 
-
-        x0 = min(tb.bbox.x0 for tb in col)
-        y0 = min(tb.bbox.y0 for tb in col)
-        x1 = max(tb.bbox.x1 for tb in col)
-        y1 = max(tb.bbox.y1 for tb in col)
-        merged_text_blocks.append(TextBlock(col_text, Bbox(x0, y0, x1, y1), main_style))
-
-    x0 = min(tb.bbox.x0 for tb in merged_text_blocks)
-    y0 = min(tb.bbox.y0 for tb in merged_text_blocks)
-    x1 = max(tb.bbox.x1 for tb in merged_text_blocks)
-    y1 = max(tb.bbox.y1 for tb in merged_text_blocks)
-
-    return LineBlock(text_blocks=merged_text_blocks, bbox=Bbox(x0, y0, x1, y1))
+    return LineBlock(text_blocks=all_line_tbs, bbox=Bbox(gx0, gy0, gx1, gy1))
 
 
 class RawBlockType(Enum):
@@ -137,24 +137,24 @@ def is_heading_candidate(paragraph: ParagraphBlock, toc: TocBlock):
             return False
     else:
         return False
+    
+def is_in_table(top: float, bottom: float, table: TableInfo):
+    return table.horizontal_lines[0] <= (top + bottom) / 2 and table.horizontal_lines[-1] >= (top + bottom) / 2
 
-def get_raw_block_type(block: dict) -> RawBlockType:
+#def get_raw_block_type(block: dict, table: TableInfo) -> RawBlockType:
     if block.get("image"):
         return RawBlockType.FIGURE
-    line_block = split_block_into_lineblock(block)
-    if (len(line_block.text_blocks) == 0):
+    line = split_block_into_lineblock(block)
+    if (len(line.text_blocks) == 0):
         return RawBlockType.UNUSED
-    if (len(line_block.text_blocks) > 1):
+    line_block = split_line_into_columns(line, table.columns)
+    if len(line_block.text_blocks) > 1:
         return RawBlockType.TABLE
-    block_text = line_block.text_blocks[0].text
-    if TOC_CAPTION_RE.match(block_text.strip()):
+    block_text = line.text().strip()
+    if TOC_CAPTION_RE.match(block_text):
         return RawBlockType.TOC_CAPTION
     if PAGE_NUMBER_RE.match(block_text.strip()):
         return RawBlockType.UNUSED
-    if TABLE_CAPTION_RE.match(block_text.strip()):
-        return RawBlockType.TABLE_CAPTION
-    if FIGURE_CAPTION_RE.match(block_text.strip()):
-        return RawBlockType.FIGURE_CAPTION
     return RawBlockType.TEXT
     
 def get_table_caption(paragraph: ParagraphBlock) -> Caption:
@@ -162,3 +162,76 @@ def get_table_caption(paragraph: ParagraphBlock) -> Caption:
 
 def get_figure_caption(paragraph: ParagraphBlock) -> Caption:
     pass
+
+def intersection(text_block: TextBlock, column_info: ColumnInfo) -> bool:
+    return text_block.bbox.x0 >= column_info.left_border and text_block.bbox.x1 <= column_info.right_border
+
+def expand_line_to_table(line_block: LineBlock, table: TableInfo) -> LineBlock:
+    columns = []
+    bbox = line_block.bbox
+    for column in table.columns:
+        result = TextBlock(
+            "",
+            Bbox(
+                column.left_border,
+                bbox.y0,
+                column.right_border,
+                bbox.y1
+            ),
+            None
+        )
+        for text_block in line_block.text_blocks:
+            if (intersection(text_block, column)):
+                result = text_block
+                break
+        columns.append(result)
+    return LineBlock(
+        columns,
+        Bbox(
+            min(tb.bbox.x0 for tb in columns),
+            bbox.y0,
+            max(tb.bbox.x1 for tb in columns),
+            bbox.y1
+        )
+    )
+
+def has_between(a: list[float], left: float, right: float) -> bool:
+    from bisect import bisect_left
+    i = bisect_left(a, left)
+    return i < len(a) and a[i] <= right
+
+def is_table_continuation(paragraph: ParagraphBlock) -> bool:
+    return TABLE_CONTINUATION_RE.match(paragraph.text)
+
+
+#def split_line_into_columns(line: LineBlock, columns: list[ColumnInfo]) -> LineBlock:
+    blocks_iter = iter(line.text_blocks)
+    current_b = next(blocks_iter, None)
+    result: list[TextBlock] = []
+    
+    default_style = line.text_blocks[0].style if line.text_blocks else Style()
+
+    for col in columns:
+        col_group = []
+        
+        while current_b and current_b.bbox.x1 <= col.left_border:
+            current_b = next(blocks_iter, None)
+
+        while current_b and current_b.bbox.x0 < col.right_border:
+            col_group.append(current_b)
+            current_b = next(blocks_iter, None)
+
+        if col_group:
+            text = " ".join(b.text.strip() for b in col_group if b.text)
+            new_bbox = Bbox(
+                x0=min(b.bbox.x0 for b in col_group),
+                y0=min(b.bbox.y0 for b in col_group),
+                x1=max(b.bbox.x1 for b in col_group),
+                y1=max(b.bbox.y1 for b in col_group)
+            )
+            result.append(TextBlock(text, new_bbox, col_group[0].style))
+        else:
+            res_bbox = Bbox(col.left_border, line.bbox.y0, col.right_border, line.bbox.y1)
+            result.append(TextBlock("", res_bbox, default_style))
+
+    return LineBlock(text_blocks=result, bbox=line.bbox)
