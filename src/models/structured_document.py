@@ -2,6 +2,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 import json
+import re
 from typing import List, Optional
 
 @dataclass
@@ -33,17 +34,6 @@ def detect_alignment(
     lefts_all = [ln.compute_left_indent(left_border) for ln in lines]
     rights_all = [ln.compute_right_indent(right_border) for ln in lines]
 
-    page_center = (left_border + right_border) / 2.0
-    centers = []
-    for l, r in zip(lefts_all, rights_all):
-        line_left = left_border + l
-        line_right = right_border - r
-        centers.append((line_left + line_right) / 2.0)
-
-    if all(abs(c - page_center) / (right_border - left_border) * 100 <= tol for c in centers):
-        return TextAllignment.CENTER
-
-
     if len(lines) >= 2:
         body_left = lines[1:]              
         body_right = lines[:-1]            
@@ -70,6 +60,16 @@ def detect_alignment(
             return TextAllignment.LEFT
         if abs(right_indent) <= tol:
             return TextAllignment.RIGHT
+        
+    page_center = (left_border + right_border) / 2.0
+    centers = []
+    for l, r in zip(lefts_all, rights_all):
+        line_left = left_border + l
+        line_right = right_border - r
+        centers.append((line_left + line_right) / 2.0)
+
+    if all(abs(c - page_center) / (right_border - left_border) * 100 <= tol for c in centers):
+        return TextAllignment.CENTER
 
     return TextAllignment.LEFT
 
@@ -84,7 +84,56 @@ def group_columns(line_blocks: List[LineBlock]) -> list[list[TextBlock]]:
             cols[i].append(tb)
     return cols
 
-def is_same_paragraph(prev_tbs: list[TextBlock], cur_tb: TextBlock, column_info: ColumnInfo, x_tol: float = 0.8):
+def is_list_start(text: str) -> bool:
+    if not text:
+        return False
+    s = text.lstrip()
+    list_pattern = r'^(' \
+                   r'\d+([\.\)]|\.\d+\.?)|' \
+                   r'[a-zA-Zа-яА-Я][\.\)]|' \
+                   r'[\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A0\u25AA\-—\*]' \
+                   r')\s+'
+    
+    return bool(re.match(list_pattern, s))
+
+def is_same_paragraph(prev_tbs: list[TextBlock], cur_tb: TextBlock, x_tol: float = 0.8):
+    if not prev_tbs:
+        return True
+    last_tb = prev_tbs[-1]
+    if last_tb.style != cur_tb.style:
+        return False
+    
+    last_text = last_tb.text.strip()
+    cur_text = cur_tb.text.strip()
+
+    if is_list_start(cur_text):
+        return False
+    
+    if cur_text and (cur_text[0].islower() or last_text.endswith("-")):
+        return True
+    
+    body_for_left = prev_tbs[1:]
+    body_for_right = prev_tbs[:-1]
+
+    if not body_for_left:
+        if is_list_start(last_text):
+            return cur_tb.bbox.x0 - last_tb.bbox.x0 > x_tol
+        if cur_tb.bbox.x0 < last_tb.bbox.x0 - x_tol:
+            return True
+        return False
+    
+    p_x0 = min(tb.bbox.x0 for tb in body_for_left)
+    p_x1 = max(tb.bbox.x1 for tb in body_for_right)
+    avg_right = sum(tb.bbox.x1 for tb in body_for_right) / len(body_for_right)
+
+    if abs(cur_tb.bbox.x0 - p_x0) >= x_tol:
+        return False
+
+    is_last_incomplete = avg_right * 2 - last_tb.bbox.x1 > p_x1 - x_tol
+    return not is_last_incomplete
+
+
+#def is_same_paragraph(prev_tbs: list[TextBlock], cur_tb: TextBlock, column_info: ColumnInfo, x_tol: float = 0.8):
     if not prev_tbs:
         return True
     last_tb = prev_tbs[-1]
@@ -94,12 +143,17 @@ def is_same_paragraph(prev_tbs: list[TextBlock], cur_tb: TextBlock, column_info:
     last_text = last_tb.text.strip()
     cur_text = cur_tb.text.strip()
 
+    if is_list_start(cur_text):
+        return False
+
     if cur_text and (cur_text[0].islower() or last_text.endswith("-")):
         return True
     
     body_for_left = prev_tbs[1:]
 
     if not body_for_left:
+        if is_list_start(last_tb) and cur_tb.bbox.x0 - last_tb.bbox.x0 > x_tol:
+            return True
         if cur_tb.bbox.x0 < last_tb.bbox.x0 - x_tol:
             return True
         if abs(cur_tb.bbox.x0 - last_tb.bbox.x0) < x_tol:
@@ -147,7 +201,7 @@ def split_column_to_paragraphs(column: list[TextBlock], column_info: ColumnInfo)
     current_paragraph = [first_tb]
 
     for tb in blocks_iter:
-        if is_same_paragraph(current_paragraph, tb, column_info):
+        if is_same_paragraph(current_paragraph, tb):
             current_paragraph.append(tb)
         else:
             result.append(current_paragraph)
@@ -252,7 +306,6 @@ class LineBlock:
 
 @dataclass
 class ParagraphBlock(Block):
-    #line_blocks: list[LineBlock]        # Поле потенциально нужное только для вычисления всего остального
     bbox: Bbox = None
     main_style: ParagraphStyle = None
     text: str = None

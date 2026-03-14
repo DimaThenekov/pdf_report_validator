@@ -3,16 +3,18 @@ from ..models.structured_document import *
 
 TOC_BLOCK_RE = re.compile(
     r""" ^
-        \s*                     # начальные пробелы
-        (?P<title>.+?)          # заголовок (ленивый)
-        \s*                     # пробелы
-        (?:[\.·•…]{3,}\s*)?     # опционально: точечки / лидеры
-        (?P<page>\d{1,4})       # номер страницы
-        \s*                     # хвостовые пробелы
+        \s*                               # начальные пробелы
+        (?P<title>.+?)                    # заголовок (ленивый)
+        \s*                               # пробелы перед точками
+        (?:(?:[\.·•…]\s*){3,})?           # опционально: минимум 3 символа-точки, 
+                                          # между которыми могут быть пробелы
+        (?P<page>\d{1,4})                 # номер страницы
+        \s*                               # хвостовые пробелы
         $
     """,
     re.VERBOSE,
 )
+
 
 TABLE_CAPTION_RE = re.compile(
     r"""^
@@ -76,7 +78,6 @@ def make_textblock_from_span(span: dict) -> TextBlock:
 
 
 from collections import defaultdict
-
 
 def split_block_into_lineblock(block: dict) -> LineBlock:
     lines = block.get("lines", [])

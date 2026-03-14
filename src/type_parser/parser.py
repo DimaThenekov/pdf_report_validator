@@ -183,8 +183,49 @@ class PdfParser:
 
     def parse_title(self, page: dict) -> TitleBlock:
         return TitleBlock()
-
+    
     def parse_toc(self) -> TocBlock:
+        entries: dict[str, TocEntry] = dict()
+        start_page = self.current_page
+        start_block = self.current_block
+        self.inc()
+
+        while self.current_page < self.pages_count:
+            page = self.pages[self.current_page]
+            block = page.get("blocks", [])[self.current_block]
+            block_type = self.get_raw_block_type(block)
+            if (block_type == RawBlockType.UNUSED):
+                self.inc()
+                continue
+            if (block_type != RawBlockType.TEXT):
+                break
+            paragraph = self.parse_paragraph()
+            text = paragraph.text
+            match = TOC_BLOCK_RE.match(text)
+            if match:
+                title = match.group("title").strip()
+                page_num = int(match.group("page"))
+                entry = TocEntry(
+                        title=title,
+                        page=page_num,
+                        raw_text=text             
+                    )
+                entries[title.lower()] = entry
+            else:
+                self.current_page = paragraph.start.start_page
+                self.current_block = paragraph.start.start_block
+                break
+
+        return TocBlock(
+            self.next_id(),
+            BlockCoordinate(
+                start_page,
+                start_block
+            ),
+            entries
+        )
+
+    #def parse_toc(self) -> TocBlock:
         entries: dict[str, TocEntry] = dict()
         start_page = self.current_page
         start_block = self.current_block
@@ -340,7 +381,7 @@ class PdfParser:
                 break
             line_block = self.split_line_into_columns(split_block_into_lineblock(block))
             text_block = line_block.text_blocks[0]
-            if not is_same_paragraph(paragraph_blocks, text_block, ColumnInfo(0, page["width"])):
+            if not is_same_paragraph(paragraph_blocks, text_block):
                 break
             paragraph_blocks.append(text_block)
             self.inc()
