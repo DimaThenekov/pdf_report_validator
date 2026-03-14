@@ -35,6 +35,7 @@ class ImprovedPdfParser:
 
     def collect_lines(self, pages: dict) -> list[LineBlock]:
         line_blocks: list[LineBlock] = []
+        threshold = 0.5
         for page_num, page in enumerate(pages):
             blocks = []
             for block in page.get("blocks", []):
@@ -43,10 +44,22 @@ class ImprovedPdfParser:
                     continue
                 for line in block.get("lines", []):
                     blocks.extend(TextBlock.from_span(span) for span in line.get("spans", []) if span.get("text", "").strip())
-            blocks.sort(key=lambda b: (round(b.bbox.y0), b.bbox.x0))
+            
+            blocks.sort(key=lambda b: b.bbox.y0)
             grouped_blocks = []
-            for y, group in groupby(blocks, key=lambda b: round(b.bbox.y0)):
-                grouped_blocks.append(list(group))
+            current_line = [blocks[0]]
+            
+            for i in range(1, len(blocks)):
+                if abs(blocks[i].bbox.y0 - current_line[-1].bbox.y0) <= threshold:
+                    current_line.append(blocks[i])
+                else:
+                    current_line.sort(key=lambda b: b.bbox.x0)
+                    grouped_blocks.append(current_line)
+                    current_line = [blocks[i]]
+            
+            current_line.sort(key=lambda b: b.bbox.x0)
+            grouped_blocks.append(current_line)
+
             line_blocks.extend(self.split_line_into_columns(LineBlock(page_num, line)) for line in grouped_blocks)
         return line_blocks
 
