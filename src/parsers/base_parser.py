@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from src.models.structured_document import StructuredDocument
 
 class BaseParser(ABC):
     """Базовый класс для всех парсеров разделов."""
