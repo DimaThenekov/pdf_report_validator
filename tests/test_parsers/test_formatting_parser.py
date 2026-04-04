@@ -1,3 +1,4 @@
+'''
 import pytest
 from src.models.structured_document import TextBlock, Bbox, Style
 from src.parsers.formatting_parser import FormattingParser
