@@ -1,6 +1,9 @@
 **.pdf
-main.py
 doc.py
+_debug*.py
 **DS_Store
 **pycache**
 **.json
+dist/
+build/
+.venv/
